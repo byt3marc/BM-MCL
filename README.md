@@ -15,16 +15,6 @@ The goal is to rebuild it with a cleaner codebase and a much nicer UI, while kee
 - **PySide6 + QML** for the desktop UI
 - **minecraft-launcher-lib** (`>= 8.0`) for versions, Java handling and launching
 
-## Why this architecture?
-
-The main idea is **separation of concerns**:
-
-- **`core/`** — pure Python, no Qt at all. This makes it 100% testable with plain `pytest` (mocking `minecraft_launcher_lib`), and it's the *only* place in the whole project that imports the library.
-- **`bridge/`** — the thin Qt layer. `QObject`s with signals/slots and `QThread`s, so nothing blocks the UI. It exposes `core/` to QML through `Q_PROPERTY`s.
-- **`ui/`** — pure QML: pages, reusable components and a theme. It never touches the launcher logic directly.
-
-This way I can rewrite the UI without breaking the launcher, or test the launcher without ever opening a window.
-
 ## Project structure
 
 ```text
