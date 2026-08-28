@@ -34,7 +34,8 @@ BML/
 │   │   └── microsoft.py        # wrapper over mll.microsoft_account (+ offline fallback)
 │   ├── versions/
 │   │   ├── models.py           # My own VersionInfo (id, type, releaseTime) — decoupled from the lib
-│   │   └── service.py          # ADAPTER: utils.get_version_list() -> List[VersionInfo], install.install_minecraft_version() with progress callback
+│   │   └── service.py          # ADAPTER: utils.get_version_list() -> List[VersionInfo], 
+│   │                          # install.install_minecraft_version() with progress callback
 │   ├── skins/
 │   │   ├── manager.py
 │   │   └── cache.py            # skin cache in data/skins/
