@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Callable, cast
+from typing import TextIO, cast, final
 
-try:
-    import minecraft_launcher_lib.command as mll_cmd
-except ImportError:
-    mll_cmd = None
+import minecraft_launcher_lib.command as mll_cmd
+from minecraft_launcher_lib.types import MinecraftOptions
 
 from core.auth.models import Account
 from core.settings.models import Settings
@@ -16,16 +15,19 @@ from core.settings.models import Settings
 from .java_manager import JavaManager, LauncherError
 
 
+@final
 class VersionNotInstalledError(LauncherError):
     pass
 
 
+@final
 class LaunchValidationError(LauncherError):
     def __init__(self, errors: list[str]) -> None:
         self.errors = errors
         super().__init__("; ".join(errors))
 
 
+@final
 class LaunchFailedError(LauncherError):
     pass
 
@@ -50,6 +52,7 @@ class LaunchResult:
     minecraft_dir: Path
 
 
+@final
 class LauncherService:
     def __init__(
         self,
@@ -64,50 +67,33 @@ class LauncherService:
 
     def validate_preconditions(self, options: LaunchOptions) -> list[str]:
         errors: list[str] = []
-        if not isinstance(options.version_id, str) or not options.version_id:
+        if not options.version_id:
             errors.append("Debe seleccionarse una versión.")
         elif not (options.minecraft_dir / "versions" / options.version_id / f"{options.version_id}.json").is_file():
             errors.append(f"La versión {options.version_id} no está instalada.")
-        if not isinstance(options.account, Account):
-            errors.append("Debe seleccionarse una cuenta válida.")
-        if not isinstance(options.settings, Settings):
-            errors.append("Los ajustes de lanzamiento son inválidos.")
-        else:
-            errors.extend(options.settings.validate())
+        errors.extend(options.settings.validate())
         if options.java_path is not None and not self.java_manager.is_java_available(options.java_path):
             errors.append("La ruta de Java configurada no es ejecutable.")
-        for argument_list, field_name in (
-            (options.extra_jvm_args, "extra_jvm_args"),
-            (options.extra_game_args, "extra_game_args"),
-        ):
-            if argument_list is not None and (
-                not isinstance(argument_list, list) or not all(isinstance(argument, str) for argument in argument_list)
-            ):
-                errors.append(f"{field_name} debe ser una lista de texto.")
         return errors
 
     def build_command(self, options: LaunchOptions) -> list[str]:
         errors = self.validate_preconditions(options)
         if errors:
             raise LaunchValidationError(errors)
-        if mll_cmd is None:
-            raise LaunchFailedError("minecraft_launcher_lib no está instalado.")
         mll_options = self._build_mll_options(options)
         try:
             command = mll_cmd.get_minecraft_command(
                 options.version_id,
                 str(options.minecraft_dir),
-                cast(Any, mll_options),
+                mll_options,
             )
         except Exception as error:
             raise LaunchFailedError("No se pudo construir el comando de Minecraft.") from error
-        if not isinstance(command, list) or not all(isinstance(argument, str) for argument in command):
-            raise LaunchFailedError("minecraft_launcher_lib devolvió un comando inválido.")
         return command + (options.extra_game_args or [])
 
-    def _build_mll_options(self, options: LaunchOptions) -> dict[str, object]:
+    def _build_mll_options(self, options: LaunchOptions) -> MinecraftOptions:
         java_path = options.java_path or self.java_manager.get_java_executable(options.version_id)
-        mll_options: dict[str, object] = {
+        mll_options: MinecraftOptions = {
             "username": options.account.name,
             "uuid": options.account.uuid,
             "token": options.account.access_token or "0",
@@ -128,12 +114,17 @@ class LauncherService:
         options: LaunchOptions,
         on_log: Callable[[str], None] | None = None,
         on_exit: Callable[[int], None] | None = None,
+        on_java_status: Callable[[str], None] | None = None,
+        on_started: Callable[[], None] | None = None,
         detach: bool = False,
     ) -> LaunchResult:
         errors = self.validate_preconditions(options)
         if errors:
             raise LaunchValidationError(errors)
-        java_path = options.java_path or self.java_manager.ensure_java_for_version(options.version_id)
+        java_path = options.java_path or self.java_manager.ensure_java_for_version(
+            options.version_id,
+            on_java_status,
+        )
         resolved_options = replace(options, java_path=java_path)
         command = self.build_command(resolved_options)
         self._logs.clear()
@@ -151,11 +142,14 @@ class LauncherService:
         self._process = process
         self._is_running = True
         result = LaunchResult(command, process, java_path, resolved_options.minecraft_dir)
+        if on_started is not None:
+            on_started()
         if detach:
             return result
         try:
             if process.stdout is not None:
-                for line in process.stdout:
+                output = cast(TextIO, process.stdout)
+                for line in output:
                     self._logs.append(line.rstrip("\r\n"))
                     if on_log is not None:
                         on_log(line)
