@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
-
+from typing import TypedDict, TypeGuard, cast
 
 DATE_FMT = "%Y-%m-%dT%H:%M:%S+00:00"
 
@@ -16,6 +15,15 @@ class VersionType(StrEnum):
     OLD_ALPHA = "old_alpha"
 
 
+class VersionInfoData(TypedDict):
+    id: str
+    type: str
+    release_time: str
+    time: str | None
+    url: str | None
+    installed: bool
+
+
 @dataclass(frozen=True, slots=True)
 class VersionInfo:
     id: str
@@ -25,7 +33,7 @@ class VersionInfo:
     url: str | None = None
     installed: bool = False
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> VersionInfoData:
         return {
             "id": self.id,
             "type": self.type.value,
@@ -36,20 +44,20 @@ class VersionInfo:
         }
 
     @staticmethod
-    def from_mojang_dict(data: dict[str, Any]) -> "VersionInfo":
-        if not isinstance(data, dict):
-            raise ValueError("Los datos de versión deben ser un objeto.")
+    def from_mojang_dict(data: object) -> VersionInfo:
+        if not _is_string_keyed_dict(data):
+            raise TypeError("Los datos de versión deben ser un objeto válido.")
         version_id = data.get("id")
         if not isinstance(version_id, str) or not version_id:
             raise ValueError("La versión no contiene un identificador válido.")
         raw_type = data.get("type", VersionType.RELEASE.value)
         try:
-            version_type = VersionType(raw_type)
-        except (TypeError, ValueError):
+            version_type = VersionType(raw_type) if isinstance(raw_type, str) else VersionType.RELEASE
+        except ValueError:
             version_type = VersionType.RELEASE
         release_time = _parse_datetime(data.get("releaseTime"))
         if release_time is None:
-            release_time = datetime.min.replace(tzinfo=timezone.utc)
+            release_time = datetime.min.replace(tzinfo=UTC)
         updated_time = _parse_datetime(data.get("time"), required=False)
         url = data.get("url")
         if url is not None and not isinstance(url, str):
@@ -87,19 +95,18 @@ class InstalledVersion:
         }
 
 
-def _parse_datetime(value: Any, required: bool = True) -> datetime | None:
-    if value is None:
-        if required:
-            return datetime.min.replace(tzinfo=timezone.utc)
-        return None
-    if not isinstance(value, str):
-        if required:
-            return datetime.min.replace(tzinfo=timezone.utc)
-        return None
+def _parse_datetime(value: object, required: bool = True) -> datetime | None:
+    if value is None or not isinstance(value, str):
+        return datetime.min.replace(tzinfo=UTC) if required else None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
     except ValueError:
-        if required:
-            return datetime.min.replace(tzinfo=timezone.utc)
-        return None
-    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        return datetime.min.replace(tzinfo=UTC) if required else None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+def _is_string_keyed_dict(value: object) -> TypeGuard[dict[str, object]]:
+    if not isinstance(value, dict):
+        return False
+    dictionary = cast(dict[object, object], value)
+    return all(isinstance(key, str) for key in dictionary)

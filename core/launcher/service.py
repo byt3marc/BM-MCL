@@ -4,7 +4,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import TextIO, cast, final
+from typing import Protocol, TextIO, cast, final
 
 import minecraft_launcher_lib.command as mll_cmd
 from minecraft_launcher_lib.types import MinecraftOptions
@@ -13,6 +13,22 @@ from core.auth.models import Account
 from core.settings.models import Settings
 
 from .java_manager import JavaManager, LauncherError
+
+
+class _MinecraftCommandApi(Protocol):
+    def get_minecraft_command(
+        self,
+        version: str,
+        minecraft_directory: str,
+        options: MinecraftOptions,
+    ) -> list[str]: ...
+
+
+def _as_minecraft_command_api(command_module: object) -> _MinecraftCommandApi:
+    return cast(_MinecraftCommandApi, command_module)
+
+
+_minecraft_command_api = _as_minecraft_command_api(mll_cmd)
 
 
 @final
@@ -82,7 +98,7 @@ class LauncherService:
             raise LaunchValidationError(errors)
         mll_options = self._build_mll_options(options)
         try:
-            command = mll_cmd.get_minecraft_command(
+            command = _minecraft_command_api.get_minecraft_command(
                 options.version_id,
                 str(options.minecraft_dir),
                 mll_options,

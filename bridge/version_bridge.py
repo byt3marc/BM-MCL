@@ -4,7 +4,8 @@ from typing import final
 
 from PySide6.QtCore import Property, QObject, QThread, Signal, Slot
 
-from core.versions.service import VersionError, VersionService
+from core.versions.models import VersionInfoData
+from core.versions.service import InstallCallbacks, VersionError, VersionService
 
 
 @final
@@ -23,7 +24,7 @@ class _VersionInstallWorker(QObject):
 
     @Slot()
     def run(self) -> None:
-        callbacks = {
+        callbacks: InstallCallbacks = {
             "setStatus": self.statusChanged.emit,
             "setProgress": self._set_progress,
             "setMax": self._set_maximum,
@@ -64,7 +65,7 @@ class VersionBridge(QObject):
         return self._installing
 
     @Slot(bool, result=list)
-    def getVersions(self, include_snapshots: bool) -> list[dict[str, object]]:
+    def getVersions(self, include_snapshots: bool) -> list[VersionInfoData]:
         try:
             versions = self.service.get_available_versions(include_snapshots=include_snapshots)
         except VersionError as error:

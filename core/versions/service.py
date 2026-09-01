@@ -1,24 +1,63 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Callable, cast
-
-try:
-    import minecraft_launcher_lib.install as mll_install
-    import minecraft_launcher_lib.utils as mll_utils
-except ImportError:
-    mll_install = None
-    mll_utils = None
+from typing import Protocol, TypedDict, TypeGuard, cast
 
 from .models import VersionInfo, VersionType
-
 
 MANIFEST_CACHE_SEC = 3600
 ProgressCallback = Callable[[int], None]
 MaxCallback = Callable[[int], None]
 StatusCallback = Callable[[str], None]
+
+
+class InstallCallbacks(TypedDict, total=False):
+    setStatus: StatusCallback
+    setProgress: ProgressCallback
+    setMax: MaxCallback
+
+
+class _LauncherCallbackDict(TypedDict):
+    setStatus: StatusCallback
+    setProgress: ProgressCallback
+    setMax: MaxCallback
+
+
+class _LauncherInstall(Protocol):
+    def install_minecraft_version(
+        self,
+        version: str,
+        minecraft_directory: str,
+        callback: _LauncherCallbackDict,
+    ) -> None: ...
+
+
+class _LauncherUtils(Protocol):
+    def get_installed_versions(self, minecraft_directory: str) -> list[object]: ...
+
+    def get_version_list(self) -> object: ...
+
+
+def _as_launcher_install(module: object) -> _LauncherInstall:
+    return cast(_LauncherInstall, module)
+
+
+def _as_launcher_utils(module: object) -> _LauncherUtils:
+    return cast(_LauncherUtils, module)
+
+
+try:
+    import minecraft_launcher_lib.install as _mll_install
+    import minecraft_launcher_lib.utils as _mll_utils
+except ImportError:
+    mll_install: _LauncherInstall | None = None
+    mll_utils: _LauncherUtils | None = None
+else:
+    mll_install = _as_launcher_install(_mll_install)
+    mll_utils = _as_launcher_utils(_mll_utils)
 
 
 class VersionError(Exception):
@@ -39,11 +78,11 @@ class NetworkError(VersionError):
 
 class VersionService:
     def __init__(self, minecraft_dir: Path | str) -> None:
-        self.minecraft_dir = Path(minecraft_dir)
+        self.minecraft_dir: Path = Path(minecraft_dir)
         self._cache: list[VersionInfo] | None = None
         self._cache_timestamp: float | None = None
         self._installed_cache: set[str] | None = None
-        self._callbacks: dict[str, Callable[[Any], None]] = {}
+        self._callbacks: InstallCallbacks = {}
 
     def get_available_versions(
         self,
@@ -76,10 +115,13 @@ class VersionService:
             except Exception as error:
                 raise VersionError("No se pudieron leer las versiones instaladas.") from error
             for version in raw_versions:
-                if isinstance(version, str):
-                    installed_ids.add(version)
-                elif isinstance(version, dict) and isinstance(version.get("id"), str):
-                    installed_ids.add(version["id"])
+                match version:
+                    case str() as version_id:
+                        installed_ids.add(version_id)
+                    case {"id": str() as version_id}:
+                        installed_ids.add(version_id)
+                    case _:
+                        pass
         else:
             versions_dir = self.minecraft_dir / "versions"
             if versions_dir.is_dir():
@@ -95,7 +137,7 @@ class VersionService:
         return version_id in self.get_installed_versions()
 
     def get_version_info(self, version_id: str) -> VersionInfo | None:
-        if not isinstance(version_id, str) or not version_id:
+        if not version_id:
             return None
         return next(
             (
@@ -109,10 +151,10 @@ class VersionService:
     def install_version(
         self,
         version_id: str,
-        callbacks: dict[str, Callable[[Any], None]] | None = None,
+        callbacks: InstallCallbacks | None = None,
         java_callback: Callable[[str], None] | None = None,
     ) -> None:
-        if not isinstance(version_id, str) or not version_id:
+        if not version_id:
             raise VersionNotFoundError("El identificador de versión es obligatorio.")
         if self.is_installed(version_id):
             return
@@ -120,15 +162,11 @@ class VersionService:
             raise VersionNotFoundError(f"No existe la versión {version_id}.")
         if mll_install is None:
             raise InstallError("minecraft_launcher_lib no está instalado.")
-        if callbacks is not None and not isinstance(callbacks, dict):
-            raise TypeError("callbacks debe ser un diccionario o nulo.")
         self._callbacks = callbacks or {}
         if java_callback is not None:
-            if not callable(java_callback):
-                raise TypeError("java_callback debe ser invocable.")
             java_callback(f"Instalando Minecraft {version_id}...")
         self.minecraft_dir.mkdir(parents=True, exist_ok=True)
-        callback_dict = {
+        callback_dict: _LauncherCallbackDict = {
             "setStatus": self._map_set_status,
             "setProgress": self._map_set_progress,
             "setMax": self._map_set_max,
@@ -137,7 +175,7 @@ class VersionService:
             mll_install.install_minecraft_version(
                 version=version_id,
                 minecraft_directory=str(self.minecraft_dir),
-                callback=cast(Any, callback_dict),
+                callback=callback_dict,
             )
         except Exception as error:
             raise InstallError(f"No se pudo instalar la versión {version_id}.") from error
@@ -147,18 +185,18 @@ class VersionService:
 
     def _map_set_status(self, text: str) -> None:
         callback = self._callbacks.get("setStatus")
-        if callable(callback):
-            callback(str(text))
+        if callback is not None:
+            callback(text)
 
     def _map_set_progress(self, value: int) -> None:
         callback = self._callbacks.get("setProgress")
-        if callable(callback):
-            callback(int(value))
+        if callback is not None:
+            callback(value)
 
     def _map_set_max(self, value: int) -> None:
         callback = self._callbacks.get("setMax")
-        if callable(callback):
-            callback(int(value))
+        if callback is not None:
+            callback(value)
 
     def _fetch_raw_list(self) -> object:
         if mll_utils is None:
@@ -166,16 +204,14 @@ class VersionService:
         return mll_utils.get_version_list()
 
     def _parse_raw_list(self, raw: object) -> list[VersionInfo]:
-        raw_versions = raw.get("versions", []) if isinstance(raw, dict) else raw
-        if not isinstance(raw_versions, list):
-            raise ValueError("La lista de versiones es inválida.")
+        raw_versions = _manifest_versions(raw)
+        if raw_versions is None:
+            raise TypeError("La lista de versiones es inválida.")
         versions: list[VersionInfo] = []
         for raw_version in raw_versions:
-            if not isinstance(raw_version, dict):
-                continue
             try:
                 versions.append(VersionInfo.from_mojang_dict(raw_version))
-            except ValueError:
+            except (TypeError, ValueError):
                 continue
         return versions
 
@@ -196,3 +232,23 @@ class VersionService:
             and self._cache_timestamp is not None
             and time.time() - self._cache_timestamp < MANIFEST_CACHE_SEC
         )
+
+
+def _manifest_versions(raw: object) -> list[object] | None:
+    if _is_object_list(raw):
+        return raw
+    if not _is_string_keyed_dict(raw):
+        return None
+    raw_versions = raw.get("versions")
+    return raw_versions if _is_object_list(raw_versions) else None
+
+
+def _is_object_list(value: object) -> TypeGuard[list[object]]:
+    return isinstance(value, list)
+
+
+def _is_string_keyed_dict(value: object) -> TypeGuard[dict[str, object]]:
+    if not isinstance(value, dict):
+        return False
+    dictionary = cast(dict[object, object], value)
+    return all(isinstance(key, str) for key in dictionary)

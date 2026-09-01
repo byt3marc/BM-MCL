@@ -1,14 +1,16 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import json
+from collections.abc import Mapping, MutableMapping
+from http.client import HTTPException
 from pathlib import Path
-from typing import Any
+from typing import Protocol, TypeGuard, cast
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
 from .cache import SkinCache
-
 
 MOJANG_PROFILE_URL = "https://sessionserver.mojang.com/session/minecraft/profile/{uuid}"
 CRAFATAR_SKIN_URL = "https://crafatar.com/skins/{uuid}"
@@ -35,11 +37,39 @@ class SkinDownloadError(SkinError):
     pass
 
 
+class HttpResponse(Protocol):
+    status_code: int
+    headers: Mapping[str, str]
+    content: bytes
+
+    def json(self) -> object: ...
+
+
+class HttpSession(Protocol):
+    headers: MutableMapping[str, str]
+
+    def get(self, url: str, *, timeout: float) -> HttpResponse: ...
+
+
+class HttpHeaders(Protocol):
+    def get(self, key: str, default: str = "") -> str | None: ...
+
+
+class UrllibResponse(Protocol):
+    headers: HttpHeaders
+
+    def close(self) -> None: ...
+
+    def getcode(self) -> int | None: ...
+
+    def read(self) -> bytes: ...
+
+
 class SkinManager:
-    def __init__(self, cache: SkinCache, http_session: Any | None = None) -> None:
-        self.cache = cache
-        self.session = http_session
-        if self.session is not None and hasattr(self.session, "headers"):
+    def __init__(self, cache: SkinCache, http_session: HttpSession | None = None) -> None:
+        self.cache: SkinCache = cache
+        self.session: HttpSession | None = http_session
+        if self.session is not None:
             self.session.headers.update({"User-Agent": "BML/1.0"})
 
     def get_skin_url(self, account_uuid: str) -> str:
@@ -81,28 +111,36 @@ class SkinManager:
         if profile is None:
             return None
         properties = profile.get("properties")
-        if not isinstance(properties, list):
+        if not self._is_json_list(properties):
             return None
         encoded_textures = next(
             (
-                property_.get("value")
+                property_data.get("value")
                 for property_ in properties
-                if isinstance(property_, dict) and property_.get("name") == "textures"
+                if self._is_json_object(property_data := property_)
+                and property_data.get("name") == "textures"
             ),
             None,
         )
         if not isinstance(encoded_textures, str):
             return None
         try:
-            textures_data = json.loads(base64.b64decode(encoded_textures, validate=True))
-            skin_data = textures_data["textures"]["SKIN"]
-            texture_url = skin_data["url"]
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+            textures_data = self._decode_json_object(base64.b64decode(encoded_textures, validate=True))
+            if textures_data is None:
+                raise ValueError("El campo textures debe ser un objeto JSON.")
+            textures = textures_data.get("textures")
+            if not self._is_json_object(textures):
+                raise ValueError("Falta el objeto textures.")
+            skin_data = textures.get("SKIN")
+            if not self._is_json_object(skin_data):
+                raise ValueError("Falta la skin del perfil.")
+            texture_url = skin_data.get("url")
+        except (binascii.Error, ValueError) as error:
             raise SkinDownloadError("El perfil de Mojang contiene datos de skin inválidos.") from error
         if not isinstance(texture_url, str):
             return None
-        metadata = skin_data.get("metadata", {})
-        variant = "slim" if isinstance(metadata, dict) and metadata.get("model") == "slim" else "classic"
+        metadata = skin_data.get("metadata")
+        variant = "slim" if self._is_json_object(metadata) and metadata.get("model") == "slim" else "classic"
         image_bytes = self._download(texture_url)
         return (image_bytes, variant) if image_bytes is not None else None
 
@@ -110,19 +148,21 @@ class SkinManager:
         try:
             if self.session is not None:
                 response = self.session.get(url, timeout=10)
-                status_code = getattr(response, "status_code", None)
-                headers = getattr(response, "headers", {})
-                content = getattr(response, "content", b"")
+                status_code = response.status_code
+                content_type = response.headers.get("Content-Type", "")
+                content = response.content
             else:
                 request = Request(url, headers={"User-Agent": "BML/1.0"})
-                with urlopen(request, timeout=10) as response:
+                response = cast(UrllibResponse, urlopen(request, timeout=10))
+                try:
                     status_code = response.getcode()
-                    headers = response.headers
+                    content_type = response.headers.get("Content-Type", "") or ""
                     content = response.read()
-        except (OSError, URLError, Exception):
+                finally:
+                    response.close()
+        except (HTTPException, OSError, URLError, ValueError):
             return None
-        content_type = headers.get("Content-Type", "") if hasattr(headers, "get") else ""
-        if status_code != 200 or "image/png" not in content_type.lower() or not isinstance(content, bytes):
+        if status_code != 200 or "image/png" not in content_type.lower():
             return None
         return content
 
@@ -170,11 +210,13 @@ class SkinManager:
             return False, "No se pudo leer el archivo de skin."
 
     @staticmethod
-    def _clean_uuid(account_uuid: str) -> str:
-        try:
-            return SkinCache._normalize_uuid(account_uuid)
-        except (TypeError, ValueError) as error:
-            raise SkinError("UUID inválido.") from error
+    def _clean_uuid(account_uuid: object) -> str:
+        if not isinstance(account_uuid, str):
+            raise SkinError("UUID inválido.")
+        clean_uuid = account_uuid.replace("-", "").lower()
+        if len(clean_uuid) != 32 or any(character not in "0123456789abcdef" for character in clean_uuid):
+            raise SkinError("UUID inválido.")
+        return clean_uuid
 
     @staticmethod
     def _validate_png_bytes(data: bytes) -> tuple[bool, str]:
@@ -186,19 +228,41 @@ class SkinManager:
             return False, "La skin debe medir 64x64 o 64x32 píxeles."
         return True, ""
 
-    def _get_json(self, url: str) -> dict[str, Any] | None:
+    def _get_json(self, url: str) -> dict[str, object] | None:
         try:
             if self.session is not None:
                 response = self.session.get(url, timeout=10)
-                if getattr(response, "status_code", None) != 200:
+                if response.status_code != 200:
                     return None
                 payload = response.json()
             else:
                 request = Request(url, headers={"User-Agent": "BML/1.0"})
-                with urlopen(request, timeout=10) as response:
+                response = cast(UrllibResponse, urlopen(request, timeout=10))
+                try:
                     if response.getcode() != 200:
                         return None
-                    payload = json.loads(response.read().decode("utf-8"))
-        except (OSError, URLError, ValueError, json.JSONDecodeError, Exception):
+                    payload = self._decode_json_object(response.read())
+                finally:
+                    response.close()
+        except (HTTPException, OSError, URLError, ValueError):
             return None
-        return payload if isinstance(payload, dict) else None
+        return payload if self._is_json_object(payload) else None
+
+    @staticmethod
+    def _decode_json_object(payload: bytes) -> dict[str, object] | None:
+        try:
+            decoded = cast(object, json.loads(payload))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        return decoded if SkinManager._is_json_object(decoded) else None
+
+    @staticmethod
+    def _is_json_object(value: object) -> TypeGuard[dict[str, object]]:
+        if not isinstance(value, dict):
+            return False
+        json_object = cast(dict[object, object], value)
+        return all(isinstance(key, str) for key in json_object)
+
+    @staticmethod
+    def _is_json_list(value: object) -> TypeGuard[list[object]]:
+        return isinstance(value, list)

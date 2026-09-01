@@ -5,7 +5,12 @@ from typing import final
 
 from PySide6.QtCore import QObject, QThread, QUrl, Signal, Slot
 
-from core.skins.manager import InvalidSkinError, SkinError, SkinManager, SkinNotFoundError
+from core.skins.manager import (
+    InvalidSkinError,
+    SkinError,
+    SkinManager,
+    SkinNotFoundError,
+)
 
 
 @final

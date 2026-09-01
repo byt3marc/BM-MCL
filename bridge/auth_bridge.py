@@ -6,7 +6,7 @@ from typing import final
 from PySide6.QtCore import Property, QObject, QThread, Signal, Slot
 
 from core.auth.microsoft import AuthError, MicrosoftAuthService
-from core.auth.models import Account
+from core.auth.models import Account, AccountData
 from core.auth.offline import InvalidUsernameError, create_offline_account
 from core.auth.store import AuthStore, AuthStoreError
 
@@ -66,11 +66,11 @@ class AuthBridge(QObject):
         self._login_in_progress: bool = False
 
     @Property(list, notify=accountsChanged)
-    def accounts(self) -> list[dict[str, object]]:
+    def accounts(self) -> list[AccountData]:
         return [account.to_dict() for account in self._accounts]
 
     @Property(dict, notify=selectedAccountChanged)
-    def selectedAccount(self) -> dict[str, object]:
+    def selectedAccount(self) -> AccountData | dict[str, object]:
         account = self._get_selected_account()
         return account.to_dict() if account is not None else {}
 
@@ -79,11 +79,11 @@ class AuthBridge(QObject):
         return self._login_in_progress
 
     @Slot(result=list)
-    def getAccounts(self) -> list[dict[str, object]]:
+    def getAccounts(self) -> list[AccountData]:
         return [account.to_dict() for account in self._accounts]
 
     @Slot(str, result=dict)
-    def loginOffline(self, username: str) -> dict[str, object]:
+    def loginOffline(self, username: str) -> AccountData | dict[str, object]:
         try:
             account = create_offline_account(username)
             self._store_account(account, select=True)
@@ -179,7 +179,7 @@ class AuthBridge(QObject):
         try:
             account = Account.from_dict(account_data)
             self._store_account(account, select=True)
-        except (ValueError, AuthStoreError) as error:
+        except (TypeError, ValueError, AuthStoreError) as error:
             self.loginError.emit(str(error))
             return
         data = account.to_dict()

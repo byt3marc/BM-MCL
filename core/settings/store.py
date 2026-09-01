@@ -1,14 +1,13 @@
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import platform
-from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import cast
 
-from .models import Settings
-
+from .models import JsonObject, Settings, is_json_object
 
 APP_NAME = "BML"
 SETTINGS_FILE = "settings.json"
@@ -22,7 +21,7 @@ class SettingsError(Exception):
 
 class SettingsValidationError(SettingsError):
     def __init__(self, errors: list[str]) -> None:
-        self.errors = errors
+        self.errors: list[str] = errors
         super().__init__("; ".join(errors))
 
 
@@ -32,8 +31,8 @@ class SettingsCorruptError(SettingsError):
 
 class SettingsStore:
     def __init__(self, data_dir: Path | str | None = None) -> None:
-        self.data_dir = Path(data_dir).expanduser() if data_dir is not None else self.resolve_data_dir()
-        self.settings_path = self.data_dir / SETTINGS_FILE
+        self.data_dir: Path = Path(data_dir).expanduser() if data_dir is not None else self.resolve_data_dir()
+        self.settings_path: Path = self.data_dir / SETTINGS_FILE
         self._cached_settings: Settings | None = None
         self._cached_mtime_ns: int | None = None
 
@@ -81,27 +80,31 @@ class SettingsStore:
         self._cached_mtime_ns = self._get_mtime_ns()
         return settings
 
-    def save(self, settings: Settings) -> None:
+    def save(self, settings: object) -> None:
         if not isinstance(settings, Settings):
             raise TypeError("settings debe ser una instancia de Settings.")
         errors = settings.validate()
         if errors:
             raise SettingsValidationError(errors)
         data = settings.to_dict()
+        if not is_json_object(data):
+            raise SettingsValidationError(["Los ajustes no son serializables como JSON."])
         data["__version__"] = CURRENT_SCHEMA_VERSION
         self._write_json(data)
         self._cached_settings = settings
         self._cached_mtime_ns = self._get_mtime_ns()
 
-    def update(self, patch: dict[str, Any]) -> Settings:
-        if not isinstance(patch, dict):
-            raise TypeError("patch debe ser un objeto.")
+    def update(self, patch: object) -> Settings:
+        if not is_json_object(patch):
+            raise TypeError("patch debe ser un objeto JSON.")
         allowed_fields = set(Settings().to_dict())
         unknown_fields = set(patch) - allowed_fields
         if unknown_fields:
             names = ", ".join(sorted(unknown_fields))
             raise SettingsValidationError([f"Campos de ajustes desconocidos: {names}"])
         data = self.load().to_dict()
+        if not is_json_object(data):
+            raise SettingsError("Los ajustes almacenados no son serializables como JSON.")
         data.update(patch)
         settings = Settings.from_dict(data)
         self.save(settings)
@@ -112,48 +115,51 @@ class SettingsStore:
         self.save(settings)
         return settings
 
-    def _migrate(self, raw: dict[str, Any]) -> dict[str, Any]:
-        if not isinstance(raw, dict):
+    def _migrate(self, raw: object) -> JsonObject:
+        if not is_json_object(raw):
             raise SettingsCorruptError("El archivo de ajustes debe contener un objeto JSON.")
         version = raw.get("__version__", 1)
-        if not isinstance(version, int) or version < 1:
+        if isinstance(version, bool) or not isinstance(version, int) or version < 1:
             raise SettingsCorruptError("La versión del archivo de ajustes es inválida.")
         migrated = dict(raw)
-        migrated.pop("__version__", None)
+        _ = migrated.pop("__version__", None)
         if version <= 1:
-            migrated.setdefault("theme", "dark")
-            migrated.setdefault("language", "es")
-            migrated.setdefault("concurrent_downloads", 4)
+            if "theme" not in migrated:
+                migrated["theme"] = "dark"
+            if "language" not in migrated:
+                migrated["language"] = "es"
+            if "concurrent_downloads" not in migrated:
+                migrated["concurrent_downloads"] = 4
         return migrated
 
     def _backup_corrupt_file(self) -> None:
         if not self.settings_path.exists():
             return
-        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        timestamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%d%H%M%S")
         backup_path = self.settings_path.with_name(f"{SETTINGS_FILE}.bak.{timestamp}")
         try:
-            self.settings_path.replace(backup_path)
+            _ = self.settings_path.replace(backup_path)
         except OSError as error:
             raise SettingsCorruptError("No se pudo respaldar el archivo de ajustes corrupto.") from error
 
-    def _read_json(self) -> dict[str, Any]:
+    def _read_json(self) -> JsonObject:
         try:
-            raw = json.loads(self.settings_path.read_text(encoding="utf-8"))
+            raw = cast(object, json.loads(self.settings_path.read_text(encoding="utf-8")))
         except (OSError, json.JSONDecodeError) as error:
             raise SettingsCorruptError("No se pudo leer el archivo de ajustes.") from error
-        if not isinstance(raw, dict):
+        if not is_json_object(raw):
             raise SettingsCorruptError("El archivo de ajustes debe contener un objeto JSON.")
         return raw
 
-    def _write_json(self, data: dict[str, Any]) -> None:
+    def _write_json(self, data: JsonObject) -> None:
         self.ensure_data_dir()
         temporary_path = self.settings_path.with_suffix(".tmp")
         try:
-            temporary_path.write_text(
+            _ = temporary_path.write_text(
                 json.dumps(data, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
-            temporary_path.replace(self.settings_path)
+            _ = temporary_path.replace(self.settings_path)
         except OSError as error:
             raise SettingsError("No se pudo guardar el archivo de ajustes.") from error
 

@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+import typing
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
-
 
 DEFAULT_RAM_MIN = 1024
 DEFAULT_RAM_MAX = 4096
@@ -11,6 +10,10 @@ MIN_RAM_MB = 512
 MAX_RAM_MB = 32768
 DEFAULT_THEME = "dark"
 SUPPORTED_THEMES = {"dark", "light"}
+
+JsonPrimitive: typing.TypeAlias = str | int | float | bool | None
+JsonValue: typing.TypeAlias = JsonPrimitive | list["JsonValue"] | dict[str, "JsonValue"]
+JsonObject: typing.TypeAlias = dict[str, JsonValue]
 
 
 @dataclass(slots=True)
@@ -30,7 +33,7 @@ class Settings:
 
     def validate(self) -> list[str]:
         errors: list[str] = []
-        if not isinstance(self.install_dir, Path) or not str(self.install_dir).strip():
+        if not _is_path(self.install_dir) or not str(self.install_dir).strip():
             errors.append("install_dir debe ser una ruta válida")
         if not _is_integer(self.ram_min_mb) or self.ram_min_mb < MIN_RAM_MB:
             errors.append(f"ram_min_mb debe ser un entero mayor o igual a {MIN_RAM_MB}")
@@ -38,21 +41,21 @@ class Settings:
             errors.append(f"ram_max_mb debe ser un entero menor o igual a {MAX_RAM_MB}")
         if _is_integer(self.ram_min_mb) and _is_integer(self.ram_max_mb) and self.ram_max_mb < self.ram_min_mb:
             errors.append("ram_max_mb debe ser mayor o igual a ram_min_mb")
-        if self.java_path is not None and not isinstance(self.java_path, Path):
+        if self.java_path is not None and not _is_path(self.java_path):
             errors.append("java_path debe ser una ruta o nulo")
-        if not isinstance(self.show_snapshots, bool):
+        if not _is_boolean(self.show_snapshots):
             errors.append("show_snapshots debe ser booleano")
-        if not isinstance(self.keep_launcher_open, bool):
+        if not _is_boolean(self.keep_launcher_open):
             errors.append("keep_launcher_open debe ser booleano")
         if not _is_integer(self.window_width) or self.window_width <= 0:
             errors.append("window_width debe ser un entero positivo")
         if not _is_integer(self.window_height) or self.window_height <= 0:
             errors.append("window_height debe ser un entero positivo")
-        if self.selected_account_uuid is not None and not isinstance(self.selected_account_uuid, str):
+        if self.selected_account_uuid is not None and not _is_text(self.selected_account_uuid):
             errors.append("selected_account_uuid debe ser texto o nulo")
         if self.theme not in SUPPORTED_THEMES:
             errors.append("theme debe ser 'dark' o 'light'")
-        if not isinstance(self.language, str) or not self.language.strip():
+        if not _is_text(self.language) or not self.language.strip():
             errors.append("language debe ser texto no vacío")
         if not _is_integer(self.concurrent_downloads) or not 1 <= self.concurrent_downloads <= 16:
             errors.append("concurrent_downloads debe estar entre 1 y 16")
@@ -64,47 +67,120 @@ class Settings:
         self.ram_min_mb = min(max(ram_min, MIN_RAM_MB), MAX_RAM_MB)
         self.ram_max_mb = min(max(ram_max, self.ram_min_mb), MAX_RAM_MB)
 
-    def to_dict(self) -> dict[str, Any]:
-        data = asdict(self)
-        data["install_dir"] = str(self.install_dir)
-        data["java_path"] = str(self.java_path) if self.java_path else None
-        return data
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "install_dir": str(self.install_dir),
+            "ram_min_mb": self.ram_min_mb,
+            "ram_max_mb": self.ram_max_mb,
+            "java_path": str(self.java_path) if self.java_path else None,
+            "show_snapshots": self.show_snapshots,
+            "keep_launcher_open": self.keep_launcher_open,
+            "window_width": self.window_width,
+            "window_height": self.window_height,
+            "selected_account_uuid": self.selected_account_uuid,
+            "theme": self.theme,
+            "language": self.language,
+            "concurrent_downloads": self.concurrent_downloads,
+        }
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> "Settings":
-        if not isinstance(data, dict):
-            raise ValueError("Los ajustes deben ser un objeto JSON.")
+    def from_dict(data: object) -> Settings:
+        if not is_json_object(data):
+            raise TypeError("Los ajustes deben ser un objeto JSON.")
         defaults = Settings.defaults()
         values = defaults.to_dict()
+        if not is_json_object(values):
+            raise RuntimeError("Los valores predeterminados no son serializables como JSON.")
         fields = set(values)
         values.update({key: value for key, value in data.items() if key in fields})
         try:
-            install_dir = Path(str(values["install_dir"])).expanduser()
-            raw_java_path = values["java_path"]
-            java_path = Path(str(raw_java_path)).expanduser() if raw_java_path else None
-        except (TypeError, ValueError) as error:
-            raise ValueError("Las rutas de los ajustes son inválidas.") from error
-        return Settings(
-            install_dir=install_dir,
-            ram_min_mb=values["ram_min_mb"],
-            ram_max_mb=values["ram_max_mb"],
-            java_path=java_path,
-            show_snapshots=values["show_snapshots"],
-            keep_launcher_open=values["keep_launcher_open"],
-            window_width=values["window_width"],
-            window_height=values["window_height"],
-            selected_account_uuid=values["selected_account_uuid"],
-            theme=values["theme"],
-            language=values["language"],
-            concurrent_downloads=values["concurrent_downloads"],
-        )
+            return Settings(
+                install_dir=_require_path(values["install_dir"]),
+                ram_min_mb=_require_integer(values["ram_min_mb"]),
+                ram_max_mb=_require_integer(values["ram_max_mb"]),
+                java_path=_require_optional_path(values["java_path"]),
+                show_snapshots=_require_boolean(values["show_snapshots"]),
+                keep_launcher_open=_require_boolean(values["keep_launcher_open"]),
+                window_width=_require_integer(values["window_width"]),
+                window_height=_require_integer(values["window_height"]),
+                selected_account_uuid=_require_optional_text(values["selected_account_uuid"]),
+                theme=_require_text(values["theme"]),
+                language=_require_text(values["language"]),
+                concurrent_downloads=_require_integer(values["concurrent_downloads"]),
+            )
+        except ValueError as error:
+            raise ValueError("Los ajustes contienen valores de tipo inválido.") from error
 
     @staticmethod
-    def defaults(data_dir: Path | None = None) -> "Settings":
+    def defaults(data_dir: Path | None = None) -> Settings:
         if data_dir is None:
             return Settings()
         return Settings(install_dir=Path(data_dir).expanduser() / "minecraft")
 
 
-def _is_integer(value: object) -> bool:
+def is_json_object(value: object) -> typing.TypeGuard[JsonObject]:
+    if not isinstance(value, dict):
+        return False
+    items = typing.cast(dict[object, object], value).items()
+    return all(isinstance(key, str) and _is_json_value(item) for key, item in items)
+
+
+def _is_json_value(value: object) -> typing.TypeGuard[JsonValue]:
+    if value is None or isinstance(value, str | int | float | bool):
+        return True
+    if isinstance(value, list):
+        items = typing.cast(list[object], value)
+        return all(_is_json_value(item) for item in items)
+    return is_json_object(value)
+
+
+def _is_path(value: object) -> typing.TypeGuard[Path]:
+    return isinstance(value, Path)
+
+
+def _is_boolean(value: object) -> typing.TypeGuard[bool]:
+    return isinstance(value, bool)
+
+
+def _is_text(value: object) -> typing.TypeGuard[str]:
+    return isinstance(value, str)
+
+
+def _is_integer(value: object) -> typing.TypeGuard[int]:
     return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _require_path(value: JsonValue) -> Path:
+    if not _is_text(value):
+        raise ValueError
+    return Path(value).expanduser()
+
+
+def _require_optional_path(value: JsonValue) -> Path | None:
+    if value is None:
+        return None
+    return _require_path(value)
+
+
+def _require_boolean(value: JsonValue) -> bool:
+    if not _is_boolean(value):
+        raise ValueError
+    return value
+
+
+def _require_text(value: JsonValue) -> str:
+    if not _is_text(value):
+        raise ValueError
+    return value
+
+
+def _require_optional_text(value: JsonValue) -> str | None:
+    if value is None:
+        return None
+    return _require_text(value)
+
+
+def _require_integer(value: JsonValue) -> int:
+    if not _is_integer(value):
+        raise ValueError
+    return value

@@ -7,7 +7,7 @@ from PySide6.QtCore import Property, QObject, QThread, Signal, Slot
 from bridge.auth_bridge import AuthBridge
 from bridge.settings_bridge import SettingsBridge
 from core.launcher.java_manager import JavaManager, LauncherError
-from core.launcher.service import LaunchOptions, LauncherService
+from core.launcher.service import LauncherService, LaunchOptions
 from core.settings.models import Settings
 
 
