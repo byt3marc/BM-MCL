@@ -2,12 +2,6 @@
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools.packages.find]
-include = ["bridge*", "core*"]
-
-[tool.ruff.lint.isort]
-known-first-party = ["bridge", "core"]
-
 [project]
 name = "bm-mcl"
 version = "0.1.0"
@@ -17,3 +11,18 @@ dependencies = [
     "minecraft-launcher-lib>=8.0,<9",
     "PySide6>=6.7,<7",
 ]
+
+[project.scripts]
+bm-mcl = "main:run"
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["bridge*", "core*"]
+
+[tool.setuptools.data-files]
+"ui" = ["ui/qml/main.qml", "ui/qml/theme/qmldir", "ui/qml/pages/qmldir", "ui/qml/components/qmldir", "ui/qml/theme/Theme.qml", "ui/qml/theme/Colors.qml", "ui/qml/pages/Login.qml", "ui/qml/pages/Home.qml", "ui/qml/pages/Library.qml", "ui/qml/pages/Settings.qml", "ui/qml/components/BMButton.qml", "ui/qml/components/BMCard.qml", "ui/qml/components/BMProgressBar.qml"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["bridge", "core"]

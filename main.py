@@ -6,6 +6,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtQuickControls2 import QQuickStyle
 
 from bridge.auth_bridge import AuthBridge
 from bridge.launcher_bridge import LauncherBridge
@@ -43,7 +44,9 @@ def create_bridges() -> dict[str, QObject]:
 
 def run() -> int:
     application = QGuiApplication(sys.argv)
+    QQuickStyle.setStyle("Basic")
     engine = QQmlApplicationEngine()
+    engine.addImportPath(str(Path(__file__).resolve().parent / "ui" / "qml"))
     bridges = create_bridges()
     context = engine.rootContext()
     for name, bridge in bridges.items():

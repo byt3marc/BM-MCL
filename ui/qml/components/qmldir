@@ -1,0 +1,4 @@
+module components
+BMButton 1.0 BMButton.qml
+BMCard 1.0 BMCard.qml
+BMProgressBar 1.0 BMProgressBar.qml
